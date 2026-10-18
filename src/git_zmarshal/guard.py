@@ -20,7 +20,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-
 DEFAULT_PROGRAMS = {
     "pg_dump": "a logical database dump holds relation locks",
     "pg_dumpall": "a logical database dump holds relation locks",

@@ -102,6 +102,6 @@ def test_readme_code_examples_execute_cleanly():
         if "/srv/repo" in code:
             continue
         namespace: dict = {}
-        exec(code, namespace)  # noqa: S102
+        exec(code, namespace)
         executed += 1
     assert executed >= 4

@@ -53,7 +53,7 @@ class DeployTrainPolicy:
         if not math.isfinite(window) or window < 0:
             raise ValueError("window_seconds must be finite and non-negative")
         try:
-            created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))  # noqa: FURB162 -- Python 3.10
+            created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
             created = created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created  # noqa: UP017 -- Python 3.10
         except ValueError:
             return 0

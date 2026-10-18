@@ -7,8 +7,8 @@ import json
 import subprocess
 import sys
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from . import __version__, guard, train, wave, xcode
 
@@ -234,7 +234,7 @@ def _run_demo(*, as_json: bool = False) -> int:
         )
         print()
         print("4. Multi-commit Git ancestry proof (git merge-base --is-ancestor):")
-        for item, res in zip(commits, proof.results):
+        for item, res in zip(commits, proof.results, strict=True):
             print(f"   - {res.revision[:12]} ({item['actor']}): {res.status.upper()}")
         print(
             f"   - {unmerged_sha[:12]} (unmerged side branch): {negative_proof.results[0].status.upper()}"
