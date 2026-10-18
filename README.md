@@ -96,32 +96,56 @@ The package does not supply a deployment daemon, database, HTTP server, build sy
 
 ---
 
-## Train policy (`git_zmarshal.train`)
+## Train planner and policy (`git_zmarshal.train`)
 
 ```python
-from git_zmarshal.train import DeployTrainPolicy, add_train_request
+from git_zmarshal.train import (
+    DeployTrainPolicy,
+    add_train_request,
+    merge_deploy_result,
+    plan_deploy_enqueue,
+)
 
 policy = DeployTrainPolicy(window_seconds=5, request_limit=200)
-running = {
-    "action": "deploy", "status": "running", "source_revision": "commit-a",
-}
-assert policy.can_share_running(running, "commit-a")
-assert not policy.can_share_running(running, "commit-b")
 
-queued = {
-    "action": "deploy", "status": "queued", "source_revision": "commit-b",
-    "idempotency_key": "first-request", "actor": "agent-one", "reason": "merge B",
-}
-queued = add_train_request(
-    queued, actor="agent-two", reason="merge C",
-    idempotency_key="second-request", revision="commit-c",
+# High-level planner: decides whether an incoming deploy request deduplicates,
+# joins a running wave, coalesces into a queued wave, or inserts a new wave:
+plan1 = plan_deploy_enqueue(
+    [],
+    policy=policy,
+    service="api",
+    actor="agent-one",
+    reason="merge B",
+    idempotency_key="first-request",
+    revision="commit-b",
 )
-assert queued["coalesced_count"] == 2
+assert plan1.action == "insert" and plan1.train_step == "started"
+
+plan2 = plan_deploy_enqueue(
+    [plan1.job],
+    policy=policy,
+    service="api",
+    actor="agent-two",
+    reason="merge C",
+    idempotency_key="second-request",
+    revision="commit-c",
+)
+assert plan2.action == "join_queued"
+assert plan2.job["coalesced_count"] == 2
+assert plan2.job["expected_revisions"] == ["commit-b", "commit-c"]
+
+# Preserve server-owned train metadata when merging a worker's terminal result:
+final_job = merge_deploy_result(
+    plan2.job,
+    {"status": "succeeded", "deployed_revision": "commit-c"},
+)
+assert final_job["coalesced_count"] == 2
+assert final_job["deployed_revision"] == "commit-c"
 ```
 
-Use `policy.eligible(...)` to exclude forced, fresh, pinned or otherwise non-coalescible operations. A request can attach to a running wave only when both revisions are known and equal. An accepted reservation is already departing: its checkout may be changing, so new requests belong in a queued wave. Check for a compatible queued wave before opening another one.
+Use `plan_deploy_enqueue(...)` (which mirrors `plan_xcode_enqueue(...)` for server/container deployments) or lower-level `policy.eligible(...)` + `add_train_request(...)`. A request attaches to a running wave only when both revisions are known and equal and the running wave is not stale (`stale_running_timeout_seconds`, default 3600s). An accepted reservation is already departing: its checkout may be changing, so new requests belong in a queued wave.
 
-`add_train_request` returns a copied record; repeated idempotency keys do not increment its count. It keeps every `coalesced_idempotency_keys` entry even when `train_requests` audit history reaches its bound. Index those keys in your durable store for retries after completion. A queued source revision is an observation, not a pin: concurrent fetches can arrive out of order, so resolve again at departure. A running source revision remains immutable.
+`add_train_request` returns a copied record; repeated idempotency keys do not increment its count. It keeps every `coalesced_idempotency_keys` and `expected_revisions` entry even when `train_requests` audit history reaches its bound. Index those keys in your durable store for retries after completion. A queued source revision is an observation, not a pin: concurrent fetches can arrive out of order, so resolve again at departure. A running source revision remains immutable.
 
 ---
 
@@ -136,6 +160,7 @@ guard = HostAdmissionGuard(GuardConfig(
     max_load_per_cpu=1.5,
     max_swap_used_ratio=0.5,
     pressure_limit=20,
+    include_xcode_programs=True,
 ))
 pending = PendingStore("/tmp/git-zmarshal-pending")
 verdict = guard.check()
@@ -146,7 +171,7 @@ if not verdict.ok:
 pending.clear("api", owner_id="wave-42")
 ```
 
-The scanner recognises actual executable names and Python entrypoints, not words embedded in shell arguments. It identifies test runs (`pytest`), backup tools (`pg_dump`, `pg_dumpall`, `pg_basebackup`, `restic`) and Git maintenance (`gc`, `prune`, `repack`, `pack-objects`, `fsck`). Resource thresholds are disabled until configured. The scanner tolerates processes disappearing between `/proc` reads.
+The scanner recognises actual executable names and Python entrypoints, not words embedded in shell arguments. It identifies test runs (`pytest`), backup tools (`pg_dump`, `pg_dumpall`, `pg_basebackup`, `restic`), Git maintenance (`gc`, `prune`, `repack`, `pack-objects`, `fsck`), and—when `include_xcode_programs=True`—Apple build tools (`xcodebuild`, `swift-frontend`). On Linux it reads `/proc` (`cmdline`, `cgroup`, `loadavg`, `meminfo`, `pressure/*`); on macOS/POSIX hosts without `/proc`, it automatically falls back to `ps -axo pid=,args=`, `os.getloadavg()`, and `sysctl vm.swapusage`. Resource thresholds are disabled until configured, and the scanner tolerates processes disappearing between reads.
 
 Pytest within recognised `docker-*.scope`, `containerd`, `kubepods` or `actions_job` cgroups is exempt from the test contender check. Additional component names can be configured with `admitted_cgroup_components`. Host pressure checks still apply. The guard is advisory scheduling, not a security boundary: missing or unreadable telemetry fails open.
 
@@ -253,6 +278,35 @@ Key invariants in `git_zmarshal.xcode`:
 
 ---
 
+## Reference SQLite + subprocess runner (`examples/minimal_yard.py`)
+
+For a drop-in single-host deploy runner that ties `DeployTrainPolicy`, `HostAdmissionGuard`, `PendingStore` and `verify_wave` together around `sqlite3` (`BEGIN IMMEDIATE` transactions) and `subprocess.run`, see [`examples/minimal_yard.py`](examples/minimal_yard.py):
+
+```sh
+python examples/minimal_yard.py --demo
+```
+
+It implements atomic reserve/coalesce across active and completed waves, records owner-tagged pending markers when held by `/proc` contenders, resolves `HEAD` at departure while releasing SQLite locks before subprocess I/O, and verifies every coalesced commit against the deployed revision.
+
+---
+
+## Two-way monorepo sync (`scripts/sync_monorepo.py`)
+
+`git-zmarshal` is maintained in two-way lockstep with `packages/git-deploy-train` inside the Cortex monorepo, with `src/git_deploy_train/` mirrored as a self-contained zero-dependency package so isolated daemons (`python3 -I -S`) can load modules directly from disk:
+
+```sh
+# Verify byte-for-byte shim parity and isolated python3 -I -S loading:
+python scripts/sync_monorepo.py --check
+
+# Push standalone upgrades into a monorepo checkout:
+python scripts/sync_monorepo.py --push-to-monorepo --monorepo /path/to/monorepo
+
+# Pull monorepo improvements back into the standalone repo:
+python scripts/sync_monorepo.py --pull-from-monorepo --monorepo /path/to/monorepo
+```
+
+---
+
 ## Tests and licence
 
 Run the portable test suite from this directory:
@@ -264,3 +318,4 @@ python -m pytest -v
 Tests create temporary Git repositories and synthetic `/proc` trees and require no external services.
 
 MIT; see [LICENSE](LICENSE).
+

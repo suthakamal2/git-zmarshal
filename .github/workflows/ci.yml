@@ -26,7 +26,9 @@ jobs:
         run: ruff check .
       - name: Test
         run: python -m pytest -v
-      - name: Verify CLI demo
+      - name: Verify CLI demo & isolated runtime parity
         run: |
           git-zmarshal demo
           git-zmarshal demo --json
+          python examples/minimal_yard.py --demo
+          python scripts/sync_monorepo.py --check

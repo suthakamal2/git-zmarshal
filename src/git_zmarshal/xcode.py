@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypedDict
 
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 _FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
@@ -19,6 +19,51 @@ UNIVERSAL_APPLE_TARGETS = frozenset({"ios", "ipad", "watch"})
 DEFAULT_IPHONE_TARGETS = frozenset({"ios", "watch", "iphone"})
 DEFAULT_IPAD_TARGETS = frozenset({"ipad"})
 STALE_CLAIM_TIMEOUT_SECONDS: float = 45 * 60.0
+
+
+class XcodeRequestEntry(TypedDict, total=False):
+    target: str
+    job_type: str
+    git_ref: str | None
+    reason: str
+    requested_by: str
+    launch: bool
+    requested_at: str
+    expected_revision: str
+    idempotency_key: str
+
+
+class XcodeTrainRecord(TypedDict, total=False):
+    lane: list[str]
+    coalesced_count: int
+    first_enqueued_at: str
+    last_enqueued_at: str
+    requested_targets: list[str]
+    device_kinds: list[str]
+    expected_revisions: list[str]
+    coalesced_idempotency_keys: list[str]
+    train_requests: list[XcodeRequestEntry]
+    isolated: bool
+    resolved_commit: str
+    installed_devices: list[str]
+    installed_udids: list[str]
+
+
+class XcodeJobRecord(TypedDict, total=False):
+    id: str
+    status: str
+    target: str
+    job_type: str
+    git_ref: str | None
+    reason: str
+    requested_by: str
+    launch: bool
+    expected_revision: str | None
+    idempotency_key: str | None
+    coalesce: bool
+    claimed_at: str | None
+    created_at: str | None
+    result: dict[str, Any]
 
 
 @dataclass(frozen=True)

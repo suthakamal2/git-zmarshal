@@ -163,7 +163,7 @@ def own_cmdline():
             if token
         ]
     except OSError:
-        return []
+        return [sys.executable, *sys.argv] if sys.argv else []
 
 
 def _exempt():

@@ -105,3 +105,91 @@ def test_readme_code_examples_execute_cleanly():
         exec(code, namespace)
         executed += 1
     assert executed >= 4
+
+
+def test_minimal_yard_sqlite_runner_coalesces_holds_and_verifies(tmp_path: Path):
+    import importlib.util
+    import sys
+
+    from git_zmarshal.guard import GuardConfig, HostAdmissionGuard
+
+    example_path = Path(__file__).resolve().parents[1] / "examples" / "minimal_yard.py"
+    spec = importlib.util.spec_from_file_location("minimal_yard", example_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q", "--initial-branch=main"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+
+    shas: list[str] = []
+    for i in range(1, 4):
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-qm", f"c{i}"],
+            check=True,
+        )
+        shas.append(
+            subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+
+    proc = tmp_path / "proc"
+    (proc / "500").mkdir(parents=True)
+    (proc / "500" / "cmdline").write_bytes(b"python3\x00-m\x00pytest\x00")
+    (proc / "500" / "cgroup").write_text("0::/user.slice/session-1.scope\n")
+
+    yard = mod.MinimalYard(
+        tmp_path / "yard.db",
+        repo,
+        pending_dir=tmp_path / "pending",
+        guard=HostAdmissionGuard(GuardConfig(proc_root=proc)),
+    )
+
+    w1 = yard.enqueue("api", actor="a1", reason="r1", revision=shas[0], idempotency_key="k1")
+    w2 = yard.enqueue("api", actor="a2", reason="r2", revision=shas[1], idempotency_key="k2")
+    w3 = yard.enqueue("api", actor="a3", reason="r3", revision=shas[2], idempotency_key="k3")
+    assert w1["step"] == "started"
+    assert w2["step"] == "joined_queued" and w2["job_id"] == w1["job_id"]
+    assert w3["step"] == "joined_queued" and w3["coalesced_count"] == 3
+
+    # Held while host pytest contender is active; records owner-tagged pending marker
+    held = yard.step("api", [sys.executable, "-c", "pass"])
+    assert held is not None and held["status"] == "held"
+    assert yard.pending.read("api")["owner_id"] == w1["job_id"]
+
+    # Contender finishes -> wave departs, clears pending marker, and proves all 3 commits
+    (proc / "500" / "cmdline").unlink()
+    ran = yard.step("api", [sys.executable, "-c", "pass"])
+    assert ran is not None and ran["status"] == "succeeded"
+    assert yard.pending.read("api") is None
+
+    proof = yard.verify(w1["job_id"])
+    assert proof["ok"] is True
+    assert [r["status"] for r in proof["results"]] == ["ancestor", "ancestor", "equal"]
+
+    # Idempotent retry after completion deduplicates against the completed SQLite row
+    dup = yard.enqueue("api", actor="a2", reason="r2", revision=shas[1], idempotency_key="k2")
+    assert dup["step"] == "deduplicated" and dup["job_id"] == w1["job_id"]
+
+
+def test_sync_monorepo_check_and_isolated_parity():
+    import sys
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "sync_monorepo.py"
+    proc = subprocess.run(
+        [sys.executable, str(script), "--check"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "isolated python -I -S verified" in proc.stdout
+
+

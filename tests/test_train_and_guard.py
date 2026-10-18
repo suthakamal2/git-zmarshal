@@ -319,3 +319,161 @@ def test_guard_imports_under_isolated_python_without_site_packages():
         timeout=10,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_plan_deploy_enqueue_insert_join_deduplicate_and_stale_running():
+    # 1. Initial request inserts a queued wave
+    p1 = train.plan_deploy_enqueue(
+        [],
+        service="api",
+        actor="a1",
+        reason="r1",
+        idempotency_key="k1",
+        revision="a" * 40,
+    )
+    assert p1.action == "insert"
+    assert p1.train_step == "started"
+    assert p1.job["expected_revisions"] == ["a" * 40]
+    w1 = dict(p1.job, job_id="w1")
+
+    # 2. Second request for the same service joins the queued wave
+    p2 = train.plan_deploy_enqueue(
+        [w1],
+        service="api",
+        actor="a2",
+        reason="r2",
+        idempotency_key="k2",
+        revision="b" * 40,
+        probe_seconds=90,
+    )
+    assert p2.action == "join_queued"
+    assert p2.train_step == "joined_queued"
+    assert p2.job["coalesced_count"] == 2
+    assert p2.job["expected_revisions"] == ["a" * 40, "b" * 40]
+    assert p2.job["probe_seconds"] == 90
+    w1_updated = p2.job
+
+    # 3. Duplicate idempotency key deduplicates
+    p_dup = train.plan_deploy_enqueue(
+        [w1_updated],
+        service="api",
+        actor="a2",
+        reason="r2",
+        idempotency_key="k2",
+        revision="b" * 40,
+    )
+    assert p_dup.action == "deduplicated"
+    assert p_dup.train_step == "deduplicated"
+
+    # 4. Running wave with matching revision shares running wave
+    w_running = dict(
+        w1_updated,
+        status="running",
+        source_revision="b" * 40,
+        started_at="2026-10-18T12:00:00Z",
+    )
+    p_run = train.plan_deploy_enqueue(
+        [w_running],
+        service="api",
+        actor="a3",
+        reason="r3",
+        idempotency_key="k3",
+        revision="b" * 40,
+        now="2026-10-18T12:01:00Z",
+    )
+    assert p_run.action == "join_running"
+    assert p_run.train_step == "joined_running"
+    assert p_run.job["coalesced_count"] == 3
+
+    # 5. Running wave with different revision opens a follow-up queued wave (queued_next)
+    p_next = train.plan_deploy_enqueue(
+        [w_running],
+        service="api",
+        actor="a4",
+        reason="r4",
+        idempotency_key="k4",
+        revision="c" * 40,
+        now="2026-10-18T12:01:00Z",
+    )
+    assert p_next.action == "insert"
+    assert p_next.train_step == "queued_next"
+
+    # 6. Stale running wave is ignored when past stale_running_timeout_seconds
+    p_stale = train.plan_deploy_enqueue(
+        [w_running],
+        service="api",
+        actor="a5",
+        reason="r5",
+        idempotency_key="k5",
+        revision="b" * 40,
+        now="2026-10-18T14:00:00Z",
+        stale_running_timeout_seconds=1800,
+    )
+    assert p_stale.action == "insert"
+    assert p_stale.train_step == "started"
+
+    # 7. Isolated request (force=True or coalesce=False) inserts an isolated wave
+    p_iso = train.plan_deploy_enqueue(
+        [w1_updated],
+        service="api",
+        actor="ops",
+        reason="emergency force",
+        force=True,
+    )
+    assert p_iso.action == "insert"
+    assert p_iso.job["isolated"] is True
+
+
+def test_merge_deploy_result_preserves_train_metadata():
+    base = train.add_train_request(
+        {
+            "job_id": "w1",
+            "service": "api",
+            "status": "running",
+            "actor": "a1",
+            "reason": "r1",
+            "idempotency_key": "k1",
+            "source_revision": "a" * 40,
+        },
+        actor="a2",
+        reason="r2",
+        idempotency_key="k2",
+        revision="b" * 40,
+    )
+    merged = train.merge_deploy_result(
+        base,
+        {
+            "status": "succeeded",
+            "deployed_revision": "b" * 40,
+            "coalesced_count": 1,  # stale worker report must not overwrite train state
+        },
+    )
+    assert merged["status"] == "succeeded"
+    assert merged["deployed_revision"] == "b" * 40
+    assert merged["coalesced_count"] == 2
+    assert merged["coalesced_idempotency_keys"] == ["k1", "k2"]
+    assert merged["expected_revisions"] == ["a" * 40, "b" * 40]
+
+
+def test_darwin_posix_ps_and_swapusage_support_in_guard(tmp_path: Path):
+    missing_proc = tmp_path / "no-proc"
+    ps_sample = (
+        f"  {os.getpid()} /usr/bin/python3 -m pytest\n"
+        "  4242 /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -scheme App\n"
+        "  4343 /usr/local/bin/python3 -m pytest -q\n"
+    )
+    cfg = guard.GuardConfig(
+        proc_root=missing_proc,
+        include_xcode_programs=True,
+        max_swap_used_ratio=0.8,
+        ps_output=ps_sample,
+        darwin_swapusage="vm.swapusage: total = 4096.00M  used = 3584.00M  free = 512.00M  (encrypted)",
+    )
+    verdict = guard.HostAdmissionGuard(cfg).check()
+    assert not verdict.ok
+    assert any("xcodebuild running" in h for h in verdict.holds)
+    assert any("pytest running" in h for h in verdict.holds)
+    assert any("host swap used" in h for h in verdict.holds)
+    assert verdict.detail["swap_used_ratio"] == pytest.approx(0.875)
+
+
