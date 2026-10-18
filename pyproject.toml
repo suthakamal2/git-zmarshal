@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "git-zmarshal"
+version = "0.1.0"
+description = "Z-scale Git deploy & Xcode build marshaling yard for multi-agent coding hosts: coalesce N merges into < N waves, admit on host capacity, yield pytest cooperatively, and prove multi-commit ancestry."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "Sutha Kamal"}]
+keywords = [
+    "git",
+    "deployment",
+    "deploy-train",
+    "marshaling",
+    "xcode",
+    "ios",
+    "ci",
+    "coding-agents",
+    "pytest",
+    "concurrency",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = []
+
+[project.optional-dependencies]
+pytest = ["pytest>=7"]
+test = ["pytest>=7"]
+dev = ["pytest>=7", "ruff>=0.6"]
+
+[project.scripts]
+git-zmarshal = "git_zmarshal.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/suthakamal2/git-zmarshal"
+Repository = "https://github.com/suthakamal2/git-zmarshal"
+Issues = "https://github.com/suthakamal2/git-zmarshal/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["git_zmarshal*", "git_deploy_train*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
