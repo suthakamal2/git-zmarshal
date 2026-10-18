@@ -179,17 +179,28 @@ def test_minimal_yard_sqlite_runner_coalesces_holds_and_verifies(tmp_path: Path)
     assert dup["step"] == "deduplicated" and dup["job_id"] == w1["job_id"]
 
 
-def test_sync_monorepo_check_and_isolated_parity():
+def test_shim_parity_and_isolated_loading():
     import sys
 
-    script = Path(__file__).resolve().parents[1] / "scripts" / "sync_monorepo.py"
-    proc = subprocess.run(
-        [sys.executable, str(script), "--check"],
-        capture_output=True,
-        text=True,
-        check=False,
+    root = Path(__file__).resolve().parents[1]
+    zm_dir = root / "src" / "git_zmarshal"
+    dt_dir = root / "src" / "git_deploy_train"
+    for name in ("__init__.py", "cli.py", "guard.py", "py.typed", "pytest_plugin.py", "train.py", "wave.py", "xcode.py"):
+        assert (zm_dir / name).read_bytes() == (dt_dir / name).read_bytes(), name
+
+    code = (
+        "import importlib.util, pathlib, sys\n"
+        "root = pathlib.Path(sys.argv[1])\n"
+        "for pkg in ('git_zmarshal', 'git_deploy_train'):\n"
+        "    for mod in ('guard', 'train', 'wave', 'xcode', 'pytest_plugin'):\n"
+        "        p = root / 'src' / pkg / f'{mod}.py'\n"
+        "        s = importlib.util.spec_from_file_location(f'_{pkg}_{mod}', p)\n"
+        "        m = importlib.util.module_from_spec(s)\n"
+        "        sys.modules[s.name] = m\n"
+        "        s.loader.exec_module(m)\n"
     )
+    proc = subprocess.run([sys.executable, "-I", "-S", "-c", code, str(root)], capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "isolated python -I -S verified" in proc.stdout
+
 
 

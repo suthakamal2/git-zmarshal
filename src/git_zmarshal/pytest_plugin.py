@@ -163,6 +163,9 @@ def own_cmdline():
             if token
         ]
     except OSError:
+        orig = getattr(sys, "orig_argv", None)
+        if orig:
+            return [str(t) for t in orig if t]
         return [sys.executable, *sys.argv] if sys.argv else []
 
 

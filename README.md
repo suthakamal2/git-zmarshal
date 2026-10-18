@@ -290,23 +290,6 @@ It implements atomic reserve/coalesce across active and completed waves, records
 
 ---
 
-## Two-way monorepo sync (`scripts/sync_monorepo.py`)
-
-`git-zmarshal` is maintained in two-way lockstep with `packages/git-deploy-train` inside the Cortex monorepo, with `src/git_deploy_train/` mirrored as a self-contained zero-dependency package so isolated daemons (`python3 -I -S`) can load modules directly from disk:
-
-```sh
-# Verify byte-for-byte shim parity and isolated python3 -I -S loading:
-python scripts/sync_monorepo.py --check
-
-# Push standalone upgrades into a monorepo checkout:
-python scripts/sync_monorepo.py --push-to-monorepo --monorepo /path/to/monorepo
-
-# Pull monorepo improvements back into the standalone repo:
-python scripts/sync_monorepo.py --pull-from-monorepo --monorepo /path/to/monorepo
-```
-
----
-
 ## Tests and licence
 
 Run the portable test suite from this directory:
